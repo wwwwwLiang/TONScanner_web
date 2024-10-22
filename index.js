@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
-const port = 3000;
+const port = 18800;
 const currentDirectory = path.dirname(require.main.filename);
 
 const storage = multer.diskStorage({
@@ -21,7 +21,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 
-
 app.get('/taskList', (req, res) => {
     // 从数据库中读取检测记录列表
 
@@ -33,6 +32,7 @@ app.get('/taskList', (req, res) => {
         problem: 长度为8的数组，依次记录每种错误的数量。
                 'BR', 'PL', 'UR', 'GVR', 'IFM', 'UBM', 'ID', 'LEP'
     */
+
     let contractList = [
         {
             name: 'task1',
