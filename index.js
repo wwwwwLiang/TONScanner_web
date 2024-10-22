@@ -21,10 +21,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 
-app.get('/', (req, res) => {
-    res.send('Hello World!')
-})
-
 
 app.get('/taskList', (req, res) => {
     // 从数据库中读取检测记录列表
