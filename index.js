@@ -1,14 +1,25 @@
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');;
 const path = require('path');
+const unzipper = require('unzipper');
+const { exec } = require('child_process');
+const crypto = require('crypto');
+const { getConnection, createTaskTableIfNotExists, createDetailTableIfNotExists, insertData, updateData, queryData, queryAllData, deleteData, insertEmptyData } = require('./runsql');
+const { runTonscanner, formatDateTime } = require('./utils');
 const app = express();
+
+function generateTaskID() {
+    return crypto.randomBytes(16).toString('hex'); // 16 bytes = 32 hex characters
+}
 
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
 const port = 18800;
 const currentDirectory = path.dirname(require.main.filename);
+let connection; // 数据库连接
 
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -21,60 +32,39 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 
-app.get('/taskList', (req, res) => {
+app.get('/taskList', async (req, res) => {
     // 从数据库中读取检测记录列表
 
     /*示例
         name: 项目名称
         time: 检测时间（时间戳）
         taskID: 随机生成
-        stast: 0:检测中 1:检测完成 2:检测失败
-        problem: 长度为8的数组，依次记录每种错误的数量。
+        states: 0:检测中 1:检测完成 2:检测失败
+        defect: 依次记录每种错误的数量。
                 'BR', 'PL', 'UR', 'GVR', 'IFM', 'UBM', 'ID', 'LEP'
     */
-
-    let contractList = [
-        {
-            name: 'task1',
-            time: '2024-10-19 22:30:44',
-            taskID: '3f93dd9087dff5b0db915e67f88ad344',
-            state: 0,   //0:检测中 1:检测完成 2:检测失败
-            problem: [0, 0, 0, 0, 0, 0, 0, 0], //
-        },
-        {
-            name: 'task2',
-            time: '2024-10-18 22:30:44',
-            taskID: '5e3212678d4d26af9e87f038032d6e59',
-            state: 1,
-            problem: [0, 2, 1, 0, 0, 1, 0, 5],
-        },
-        {
-            name: 'task3',
-            time: '2024-10-17 22:30:44',
-            taskID: '9d11c9f200bad2cee3f29a5a60d65cd7',
-            state: 1,
-            problem: [0, 0, 0, 0, 0, 0, 0, 0],
-        },
-        {
-            name: 'task4',
-            time: '2024-10-16 22:30:44',
-            taskID: '5179d2a843f14af0341142e3e2ce8457',
-            state: 2,
-            problem: [1, 2, 1, 3, 0, 1, 0, 5],
-        },
-        {
-            name: 'task5',
-            time: '2024-10-15 22:30:44',
-            taskID: 'dc14759bc60e62c488c2ab2cc324700f',
-            state: 1,
-            problem: [0, 2, 1, 9, 0, 1, 5, 5],
-        }
-    ]
+    const taskInfos = await queryAllData(connection);
+    let contractList = taskInfos.map(task => ({
+        name: task.name,
+        time: formatDateTime(task.time),
+        taskID: task.taskID,
+        state: task.status,
+        problem: [
+            task.br_count,
+            task.pl_count,
+            task.ur_count,
+            task.gvr_count,
+            task.ifm_count,
+            task.ubm_count,
+            task.id_count,
+            task.lep_count
+        ]
+    }));
 
     res.send(contractList);
 })
 
-app.get('/taskDetail', (req, res) => {
+app.get('/taskDetail', async (req, res) => {
     const taskID = req.query.taskID;
     console.log(taskID);
     // 根据taskID读取检测任务详情
@@ -116,27 +106,72 @@ app.get('/taskDetail', (req, res) => {
     res.send(JSON.stringify(taskInfo));
 })
 
-app.post('/uploadContract', upload.single('file'), (req, res) => {
-    const entranceFile = req.body.entranceFile;
-    console.log(entranceFile);
-    console.log(req.file);
-
+app.post('/uploadContract', upload.single('file'), async (req, res) => {
     /*  接收两个字段
         file: 压缩包，包含所有合约文件
         entranceFile: 字符串 入口文件名
     */
+    const entranceFile = req.body.entranceFile;
+    const filePath = req.file.path; // 压缩包
+    const uploadDir = path.join(__dirname, 'uploads');
+    const resultDir = path.join(__dirname, 'results');
 
-    // 将文件送入TONSacnner进行检测，并在检测任务列表中添加一条记录，state为0
+    const taskID = generateTaskID();
+    const resultFile = path.join(resultDir, `${taskID}.json`);
 
-    //检测完成后，将state改为1，同时补充检测结果的详细信息
+    // 解压目录
+    const fileNameWithoutExt = path.basename(req.file.filename, '.zip');
+    const outputDir = path.join(uploadDir, `${fileNameWithoutExt}-${taskID}`);
+    fs.mkdirSync(outputDir, { recursive: true });
 
-    res.send({
-        msg: '上传成功，请稍后查看检测结果'
+    // 确认文件已经上传成功
+    console.log(`Received file: ${req.file.filename}`);
+    console.log(`Entrance file: ${entranceFile}`);
+
+    fs.createReadStream(filePath)
+    .pipe(unzipper.Extract({ path: outputDir }))
+    .on('close', async () => {
+        console.log('File unzipped successfully.');
+        
+        // 插入空数据
+        await insertEmptyData(connection, taskID, fileNameWithoutExt);
+        console.log(`Init task: ${taskID}`);
+
+        const entranceFilePath = path.join(outputDir, entranceFile);
+
+        // 检查解压后的入口文件是否存在
+        if (fs.existsSync(entranceFilePath)) {
+            // 立即返回成功响应
+            res.send({
+                msg: '上传成功，检测已添加到队列'
+            });
+
+            runTonscanner(taskID, entranceFilePath, resultFile);
+        } else {
+            res.status(400).send({
+                msg: '入口文件不存在，请检查文件名是否正确'
+            });
+        }
     })
+    .on('error', (err) => {
+        console.error(`Error during file extraction: ${err.message}`);
+        res.status(500).send({
+            msg: '解压文件失败',
+            error: err.message
+        });
+    });
 })
 
-
-
-app.listen(port, () => {
+app.listen(port, async () => {
     console.log(`Example app listening on port ${port}`)
+    try {
+        connection = await getConnection();
+        console.log('Connected to the database.');
+
+        await createTaskTableIfNotExists(connection);
+        await createDetailTableIfNotExists(connection);
+        console.log('Table checked/created successfully.');
+    } catch (err) {
+        console.error('Error during database operations:', err);
+    }
 })
