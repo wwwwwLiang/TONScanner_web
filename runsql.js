@@ -2,10 +2,10 @@ var mysql = require('mysql');
 
 // 创建数据库连接池
 var pool = mysql.createPool({
-    connectionLimit: 10, // 连接池的最大连接数
+    connectionLimit: 10,
     host: 'localhost',
-    user: 'lteng',
-    password: 'ArP^x_~7u^YR]NMHeVeD',
+    user: 'xiaolizi',
+    password: 'liteng',
     database: 'ton'
 });
 
@@ -260,11 +260,12 @@ async function createDetailTableIfNotExists(connection) {
 
 async function insertDefectDetail(connection, detailData) {
     const insertSql = `
-        INSERT INTO ${detailTableName} (taskID, problemType, errorMessage, codeSnippet)
+        INSERT INTO ?? (taskID, problemType, errorMessage, codeSnippet)
         VALUES (?, ?, ?, ?);
     `;
 
     const values = [
+        detailTableName,
         detailData.taskID,
         detailData.problemType,
         detailData.errorMessage,
